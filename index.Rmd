@@ -1,0 +1,185 @@
+---
+title: "Module 8 Project"
+author: "Luis Caro"
+date: "June 18, 2017"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Module 8 Project
+
+## Purpose of the project
+
+The goal of this project is to predict if an excercise is executed correclty, or what type of wrong execution was performed, based on data collected during the execution of the excercise. In this case, the excercise studied is 
+barbell lifting, and The data collected came from accelerometers
+in the belt, arm, forearm, and dumbell of 6 participants.
+
+The correct execution of the excercise is categorized in 5 levels, A to E. A corresponds to the excercise executed
+exactly as specified, and B to E, correspond to different ways of performing the excerscise incorrectly.
+
+Devices such as Jawbone Up, Nike Fuelband, and Fitbid, probably could be used for the purpose of generating the
+data. 
+
+Detailed information of the study can be found at: http://groupware.les.inf.puc-rio.br/har .
+
+## Result
+
+As will be seen in the development of the project below, after deleting some of the predictors (explained below), using the first 10 PCAs, and applying Random Forest model with a 4-fold cross-validation, the optimal result was obtained:
+
+- Accuracy = 94%
+- Processing time under 3 minutes.
+
+## Data preparation
+
+```{r libs}
+library(ggplot2) 
+library(caret)
+library(ggplot2)
+library(AppliedPredictiveModeling)
+library(Hmisc)
+library(gbm)
+```
+
+```{r readFile}
+pml.training<-read.csv("pml-training.csv")
+pml.testing<-read.csv("pml-testing.csv")
+```
+
+The first 7 predictors were removed for the following reasons:
+- Column 1 (X) is the number of the row
+- Column 2 (user_name) is just the name
+- Columns 3,4,5 (raw_timestamp_part-1, raw_timestamp_part-2, and cvtd_timestamp) relate to times. Its meaning was 
+not found in the documentation. Initially they were removed from the data. However, since the model produced good
+results without these predictors, they were permanently removed.
+- Columns 6 and (new_window and num_window) do not appear to be related with the way the excercise is performed. They
+were also removed. 
+
+Observing the data it was noticed that several predictors have NAs in almost all observations. It is well known that
+prediction algorithms can have problems with missing data. A possible approach was to inpute missing values using
+"knnInpute". However, when for a predictor the proportion of missing values is to high, the missing values would
+be replaced with values that are possible not that meaningful. In fact, maybe very similar. We noticed that 67 rows
+had 19217 NAs (or more), which is 80% of the predictor values. Therefore, it was decided to ignore those predictors.
+
+
+```{r fewNAs}
+columnsWithFewNAs<-sapply(pml.training,function(x) sum(is.na(x)))<19216
+length(columnsWithFewNAs[columnsWithFewNAs==TRUE])
+pml.TrainingWONAs<-(pml.training[columnsWithFewNAs])[,c(-1,-2,-3,-4,-5,-6,-7)]
+```
+
+The last step was to remove predictors with near zero variance.
+
+```{r nearZV}
+nsv <- nearZeroVar(pml.TrainingWONAs,saveMetrics=TRUE)
+pml.TrainingWONAs<-pml.TrainingWONAs[,nsv$nzv == FALSE]
+```
+
+As a result of the prior steps, the number of predictors was reduced from 159 to 52 predictors
+
+## Cross validation
+
+Throughout this project the training of the models was done using a 4-fold cross validation, except if indicated
+otherwise. The number 4 was selected to keep 25% of the observations as test data in each iteration. Based on
+This approach, the out-of-sample error was estimated for each case.
+
+## Data exploration
+
+It is dificult to visualize grafically the relationships between the prdictors an the result ('classe') when there 
+are so many predictors. So it was decided to initilly build a tree model. The idea would be, based on the hierarchy
+of the nodes selected for the tree, get a feeling about what variables were the ones that at least had the most
+segregating power.
+
+```{r rpart}
+modtree <- train(classe ~.,method="rpart",data=pml.TrainingWONAs,trControl = trainControl(method="cv",number=4))
+plot(modtree$finalModel, uniform=TRUE, main="Classification Tree")
+text(modtree$finalModel, use.n=TRUE, all=TRUE, cex=.8)
+print(modtree$finalModel)
+print(modtree)
+```
+
+The first thing that can be deducted from the model is that the roll_belt is the main categoirizang predictor. The other
+important predictors for the tree model are pitrch-foearm, magnet_dumbbell and roll_forearm. However, as can be seen
+from the output, the tree model does not produce a high level of accuracy (46%).
+
+As explained in the course, the Random Forest model is very powerful for this type of problem. However, it has an
+important drawback that is the amount of time it consumes, specialy taking into consideration the large number of predictors. It was decided to run it once with all the predictors to attain what the target accuracy of the model
+could be.
+
+```{r rfglobal, cache=TRUE}
+modrf <- train(classe ~.,method="rf",data=pml.TrainingWONAs,trControl = trainControl(method="cv",number=4))
+print(modrf)
+```
+
+As can be seen in the output, the accuracy is over 99%.
+
+It is important to mention that the processing lasted 16 minutes.
+
+## Methodology
+
+It was decided to take following steps:
+
+### Apply PCA
+
+It can be concluded from the tree model that not to many variables have a segregating value. One possible reason
+for this is that the predictors can be very correlated. Measurement of the correlations was made (see Appendix),
+and the result confirmed that there are many predictors with correlations with other predictors, above 80%.
+
+It was decided to consider PCA. For this purpose we considered number of PCAs in multiples of 5 (ie. 5, 10, 15, etc,). 
+The number of PCAs would be increased until the accuracy of the model was over 90%. The model used is Random
+Forest.
+
+### Models considered
+
+As explained above, the tree model was discarded given its hig out-of-sample error. Given the high level of accuracy
+that could be obtained with a Random Forest model, it was decided to use a Random Forest model.
+
+Another model, boosting, was considered. Its results, as will be shown below, were not as good.
+
+### Random forest model results
+
+The first iteration with the model was considering 5 variables obtained under PCA.
+
+```{r rfPCA5, cache=TRUE}
+preProc5 <- preProcess(pml.TrainingWONAs[,-53],method="pca",pcaComp=5)
+pml.PC5 <- predict(preProc5,pml.TrainingWONAs[,-53])
+pml.PC5$classe<-pml.TrainingWONAs[,53]
+modrfPCA5<-train(classe ~.,data=pml.PC5,method="rf",trControl = trainControl(method="cv",number=4))
+print(modrfPCA5)
+```
+
+As it can be seen in the result, the accuracy is a little bit over 85%, and the process took around 2 minutes. 
+Even though it is a good accuracy, another iteration was made with 10 PCAs. 
+
+```{r rfPCA10, cache=TRUE}
+preProc10 <- preProcess(pml.TrainingWONAs[,-53],method="pca",pcaComp=10)
+pml.PC10 <- predict(preProc10,pml.TrainingWONAs[,-53])
+pml.PC10$classe<-pml.TrainingWONAs[,53]
+modrfPCA10<-train(classe ~.,data=pml.PC10,method="rf",trControl = trainControl(method="cv",number=4))
+print(modrfPCA10)
+```
+
+### Boosting results
+
+As an alternative Boosting was considered. The results are the following:
+
+Aas can be seen in the results, the obtained accuracy is 73%, much lower than the accuracy of the Random Forest model.
+
+```{r boost, cache=TRUE}
+modBoostPCA10 <- train(classe ~ ., method="gbm",data=pml.PC10,verbose=FALSE,trControl = trainControl(method="cv",number=4))
+print(modBoostPCA10)
+```
+
+# Appendix
+
+## Correlations among predictors
+
+```{r corr}
+M <- abs(cor(pml.TrainingWONAs[,-53]))
+diag(M) <- 0
+which(M > 0.8,arr.ind=T)
+```
+
